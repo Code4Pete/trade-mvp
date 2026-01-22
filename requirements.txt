@@ -1,0 +1,13 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9
+pydantic==2.8.2
+
+# PDF + OCR
+pypdf==5.2.0
+pdf2image==1.17.0
+pytesseract==0.3.10
+Pillow==10.4.0
+
+# LLM
+openai==1.63.0
