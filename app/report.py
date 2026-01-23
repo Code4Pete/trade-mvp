@@ -15,6 +15,24 @@ def render_report_html(report: Dict[str, Any]) -> str:
     band = report.get("risk_band", "low")
     issues: List[Dict[str, Any]] = report.get("issues", [])
 
+    summary = report.get("extracted_summary") or {}
+    inv = summary.get("invoice") or {}
+    pl = summary.get("packing_list") or {}
+    bl = summary.get("bill_of_lading") or {}
+
+    inv_terms = inv.get("commercial_terms") or {}
+    inv_no = inv_terms.get("invoice_number") or "—"
+    incoterm = inv_terms.get("incoterm") or "—"
+    inv_value = inv_terms.get("invoice_value") or "—"
+
+    inv_qty = (inv.get("cargo") or {}).get("total_quantity") or "—"
+    pl_qty = (pl.get("cargo") or {}).get("total_quantity") or "—"
+    pl_gw = (pl.get("cargo") or {}).get("total_gross_weight") or "—"
+
+    bl_no = (bl.get("transport") or {}).get("bl_number") or "—"
+    bl_gw = (bl.get("cargo") or {}).get("total_gross_weight") or "—"
+
+
     badge = _badge_color(band)
 
     issues_html = ""
@@ -40,6 +58,36 @@ def render_report_html(report: Dict[str, Any]) -> str:
               </div>
             </div>
             """
+    summary_html = f"""
+  <div class="section">
+    <div class="h2">Extracted summary</div>
+    <div class="card">
+      <div class="row"><div class="pill">Invoice</div></div>
+      <div class="muted">
+        <b>Invoice #:</b> {inv_no} &nbsp; | &nbsp;
+        <b>Incoterm:</b> {incoterm} &nbsp; | &nbsp;
+        <b>Value:</b> {inv_value} &nbsp; | &nbsp;
+        <b>Qty:</b> {inv_qty}
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row"><div class="pill">Packing List</div></div>
+      <div class="muted">
+        <b>Qty:</b> {pl_qty} &nbsp; | &nbsp;
+        <b>Gross Weight:</b> {pl_gw}
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row"><div class="pill">Bill of Lading</div></div>
+      <div class="muted">
+        <b>BL #:</b> {bl_no} &nbsp; | &nbsp;
+        <b>Gross Weight:</b> {bl_gw}
+      </div>
+    </div>
+  </div>
+  """
 
     html = f"""
 <!doctype html>
@@ -107,6 +155,8 @@ def render_report_html(report: Dict[str, Any]) -> str:
         <div class="v">Fix before filing</div>
       </div>
     </div>
+
+    {summary_html}
 
     <div class="section">
       <div class="h2">Issues found</div>
