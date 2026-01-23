@@ -68,12 +68,23 @@ def render_report_html(report: Dict[str, Any]) -> str:
     .muted {{ color:#cbd5e1; font-size: 13px; margin-top: 8px; line-height: 1.4; }}
     .rec {{ margin-top: 10px; padding-top: 10px; border-top: 1px solid #24304e; }}
     .h4 {{ font-size: 12px; font-weight: 900; color:#e5e7eb; margin-bottom: 6px; }}
+    .back {{ 
+      display: inline-block; 
+      margin-bottom: 14px; 
+      color: #93c5fd; 
+      text-decoration: none; 
+      font-weight: 700; 
+        }}
+    .back:hover {{ 
+      text-decoration: underline; 
+    }}
     .footer {{ margin-top: 22px; color:#94a3b8; font-size: 12px; }}
     a {{ color:#93c5fd; }}
   </style>
 </head>
 <body>
   <div class="wrap">
+    <a class="back" href="/">← Back to home</a>
     <div class="top">
       <div>
         <div class="title">Pre-Filing Risk Report</div>
