@@ -5,10 +5,12 @@ from typing import Dict, Any
 from pypdf import PdfReader
 
 # Optional OCR imports (only work if poppler + tesseract are installed)
+import shutil
+
 try:
     from pdf2image import convert_from_bytes
     import pytesseract
-    OCR_AVAILABLE = True
+    OCR_AVAILABLE = shutil.which("tesseract") is not None
 except Exception:
     OCR_AVAILABLE = False
 
@@ -37,13 +39,17 @@ def ocr_pdf(file_bytes: bytes, max_pages: int = 5, dpi: int = 200) -> str:
 
 
 def get_document_text(file_bytes: bytes) -> str:
-    """Hybrid extraction: try PDF text first, then OCR if needed."""
     text = extract_pdf_text(file_bytes)
-    if len(text) < 400:
-        if OCR_AVAILABLE:
+
+    # Only attempt OCR if:
+    # 1) text is small AND
+    # 2) OCR is available (tesseract installed)
+    if len(text) < 400 and OCR_AVAILABLE:
+        try:
             text = ocr_pdf(file_bytes)
-        else:
-            text = ""
+        except Exception:
+            pass  # fail silently in prod
+
     return text
 
 
