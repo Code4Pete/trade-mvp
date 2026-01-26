@@ -23,12 +23,24 @@ class Issue(BaseModel):
     recommendation: str
     evidence: Dict[str, Any] = Field(default_factory=dict)
 
+class Route(BaseModel):
+    origin_country: Optional[str] = None
+    destination_country: Optional[str] = None
+
 class RiskReport(BaseModel):
-    route: Dict[str, str]
+    route: Route
     risk_score: int
     risk_band: Literal["low", "medium", "high"]
     issues: List[Issue]
     extracted_summary: Dict[str, Any]
 
     # 👇 NEW: optional debug payload
-    debug: Optional[Dict[str, Any]] = None
+    debug: Optional[Dict[str, Any]] = Field(
+    default=None,
+    description="Internal extraction debug (not shown to end users)"
+    )
+
+
+    model_config = {
+        "extra": "allow"
+    }
