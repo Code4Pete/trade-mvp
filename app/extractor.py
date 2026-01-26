@@ -2,6 +2,7 @@
 # Regex-upgraded, "real text" extractor (no OpenAI calls)
 # - Extracts text via pypdf; falls back to OCR if available + low text
 # - Uses stronger regex for Invoice / Packing List / Bill of Lading
+# - Adds simple confidence scoring per field + overall confidence
 # - Returns consistent schema + debug helpers (via extract_document_with_debug)
 
 import io
@@ -109,11 +110,9 @@ def _to_float(s: Optional[str]) -> Optional[float]:
     if not s:
         return None
     # If commas are thousands separators, remove them
-    # (basic heuristic: if both comma and dot exist, treat comma as thousands)
     if "," in s and "." in s:
         s = s.replace(",", "")
     else:
-        # If only commas and no dots, could be "5,000" => 5000
         s = s.replace(",", "")
     try:
         return float(s)
@@ -134,7 +133,7 @@ def _guess_currency(text: str) -> Optional[str]:
     cur = _find_first([r"\bCurrency\s*[:#]?\s*([A-Z]{3})\b"], text)
     if cur:
         return cur.upper()
-    for c in ["USD", "AED", "INR", "EUR", "GBP", "SAR", "OMR", "QAR"]:
+    for c in ["USD", "AED", "INR", "EUR", "GBP", "SAR", "OMR", "QAR", "CAD"]:
         if re.search(rf"\b{c}\b", text, flags=re.IGNORECASE):
             return c
     return None
@@ -189,6 +188,7 @@ def _extract_packages(text: str) -> Optional[int]:
         [
             r"\bNo\.?\s*of\s*Cartons\s*[:\-]?\s*([\d,]+)\b",
             r"\bNo\.?\s*of\s*Packages\s*[:\-]?\s*([\d,]+)\b",
+            r"\bNo\.?\s*of\s*Pkgs?\s*[:\-]?\s*([\d,]+)\b",
             r"\bCartons\s*[:\-]?\s*([\d,]+)\b",
             r"\bPackages\s*[:\-]?\s*([\d,]+)\b",
         ],
@@ -236,7 +236,6 @@ def extract_fields(doc_type: str, text: str) -> Dict[str, Any]:
         currency = _guess_currency(text)
 
         # Total amount patterns:
-        # "Total Amount: USD 5,000" / "Total Amount USD 5000" / "Total: 5000"
         total_amount_s = _find_first(
             [
                 r"\bTotal\s*Amount\s*[:\-]?\s*(?:[A-Z]{3}\s*)?([\d,]+\.\d+|[\d,]+)\b",
@@ -265,7 +264,7 @@ def extract_fields(doc_type: str, text: str) -> Dict[str, Any]:
             },
             "cargo": {
                 "total_quantity": qty,
-                "items": [],  # keep empty for MVP; later add table extraction
+                "items": [],
             },
             "transport": {},
         }
@@ -334,7 +333,6 @@ def extract_fields(doc_type: str, text: str) -> Dict[str, Any]:
 
     pol = _find_first([r"\bPort\s*of\s*Loading\s*[:\-]?\s*(.+)"], text)
     pod = _find_first([r"\bPort\s*of\s*Discharge\s*[:\-]?\s*(.+)"], text)
-    # Cut ports at newline if needed
     if pol:
         pol = pol.split("\n")[0].strip()
     if pod:
@@ -369,6 +367,29 @@ def extract_fields(doc_type: str, text: str) -> Dict[str, Any]:
 
 
 # ---------------------------
+# Confidence scoring (simple)
+# ---------------------------
+
+def _score_field(found: bool, value: Any = None) -> float:
+    if not found:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return 1.0 if value > 0 else 0.6
+    if isinstance(value, str):
+        v = value.strip()
+        return 1.0 if len(v) >= 3 else 0.6
+    if value is None:
+        return 0.6
+    return 0.9
+
+
+def _avg(scores: List[float]) -> float:
+    if not scores:
+        return 0.0
+    return round(sum(scores) / len(scores), 2)
+
+
+# ---------------------------
 # Main entry used by API
 # ---------------------------
 
@@ -400,6 +421,15 @@ def extract_document_with_debug(doc_type: str, file_bytes: bytes) -> Tuple[Dict[
             "currency": bool(ct.get("currency")),
             "total_quantity": cargo.get("total_quantity") is not None,
         }
+
+        confidence = {
+            "invoice_number": _score_field(fields_found["invoice_number"], ct.get("invoice_number")),
+            "incoterm": _score_field(fields_found["incoterm"], ct.get("incoterm")),
+            "invoice_value": _score_field(fields_found["invoice_value"], ct.get("invoice_value")),
+            "currency": _score_field(fields_found["currency"], ct.get("currency")),
+            "total_quantity": _score_field(fields_found["total_quantity"], cargo.get("total_quantity")),
+        }
+
     elif doc_type_l == "packing_list":
         cargo = data.get("cargo") or {}
         ct = data.get("commercial_terms") or {}
@@ -410,6 +440,15 @@ def extract_document_with_debug(doc_type: str, file_bytes: bytes) -> Tuple[Dict[
             "total_gross_weight": cargo.get("total_gross_weight") is not None,
             "total_net_weight": cargo.get("total_net_weight") is not None,
         }
+
+        confidence = {
+            "packing_list_number": _score_field(fields_found["packing_list_number"], ct.get("packing_list_number")),
+            "total_quantity": _score_field(fields_found["total_quantity"], cargo.get("total_quantity")),
+            "total_packages": _score_field(fields_found["total_packages"], cargo.get("total_packages")),
+            "total_gross_weight": _score_field(fields_found["total_gross_weight"], cargo.get("total_gross_weight")),
+            "total_net_weight": _score_field(fields_found["total_net_weight"], cargo.get("total_net_weight")),
+        }
+
     else:
         tr = data.get("transport") or {}
         cargo = data.get("cargo") or {}
@@ -423,6 +462,21 @@ def extract_document_with_debug(doc_type: str, file_bytes: bytes) -> Tuple[Dict[
             "total_gross_weight": cargo.get("total_gross_weight") is not None,
         }
 
+        confidence = {
+            "bl_number": _score_field(fields_found["bl_number"], tr.get("bl_number")),
+            "port_of_loading": _score_field(fields_found["port_of_loading"], tr.get("port_of_loading")),
+            "port_of_discharge": _score_field(fields_found["port_of_discharge"], tr.get("port_of_discharge")),
+            "freight_terms": _score_field(fields_found["freight_terms"], ct.get("freight_terms")),
+            "total_packages": _score_field(fields_found["total_packages"], cargo.get("total_packages")),
+            "total_gross_weight": _score_field(fields_found["total_gross_weight"], cargo.get("total_gross_weight")),
+        }
+
+    overall = _avg(list(confidence.values()))
+
+    # Penalize OCR slightly (OCR can be noisier)
+    if method == "ocr":
+        overall = max(0.0, round(overall - 0.08, 2))
+
     debug = {
         "doc_type": doc_type,
         "ocr_available": OCR_AVAILABLE,
@@ -430,5 +484,7 @@ def extract_document_with_debug(doc_type: str, file_bytes: bytes) -> Tuple[Dict[
         "text_chars": len(text or ""),
         "text_preview": (text or "")[:1500],
         "fields_found": fields_found,
+        "confidence": confidence,
+        "confidence_overall": overall,
     }
     return data, debug
