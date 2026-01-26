@@ -6,6 +6,8 @@ from .scoring import score_issues, risk_band
 from .schemas import RiskReport
 from .report import html_response
 
+from .extractor import extract_document_with_debug
+
 app = FastAPI(title="Trade Doc AI MVP")
 
 # In-memory store for latest report (MVP only)
@@ -21,9 +23,10 @@ async def analyze(
     packing_list: UploadFile = File(...),
     bill_of_lading: UploadFile = File(...)
 ):
-    inv = extract_document("invoice", await invoice.read())
-    pack = extract_document("packing_list", await packing_list.read())
-    bl = extract_document("bill_of_lading", await bill_of_lading.read())
+    inv, inv_dbg = extract_document_with_debug("invoice", await invoice.read())
+    pack, pack_dbg = extract_document_with_debug("packing_list", await packing_list.read())
+    bl, bl_dbg = extract_document_with_debug("bill_of_lading", await bill_of_lading.read())
+
 
     issues = run_rules(inv, pack, bl)
     score = score_issues(issues)
@@ -38,8 +41,13 @@ async def analyze(
         "extracted_summary": {
             "invoice": inv,
             "packing_list": pack,
-            "bill_of_lading": bl,
-        },
+            "bill_of_lading": bl
+    },
+    "debug": {
+        "invoice": inv_dbg,
+        "packing_list": pack_dbg,
+        "bill_of_lading": bl_dbg,
+        },          
     }
 
     global LAST_REPORT
@@ -57,9 +65,9 @@ async def analyze_and_view(
     packing_list: UploadFile = File(...),
     bill_of_lading: UploadFile = File(...)
 ):
-    inv = extract_document("invoice", await invoice.read())
-    pack = extract_document("packing_list", await packing_list.read())
-    bl = extract_document("bill_of_lading", await bill_of_lading.read())
+    inv, inv_dbg = extract_document_with_debug("invoice", await invoice.read())
+    pack, pack_dbg = extract_document_with_debug("packing_list", await packing_list.read())
+    bl, bl_dbg = extract_document_with_debug("bill_of_lading", await bill_of_lading.read())
 
     issues = run_rules(inv, pack, bl)
     score = score_issues(issues)
@@ -74,7 +82,12 @@ async def analyze_and_view(
         "extracted_summary": {
             "invoice": inv,
             "packing_list": pack,
-            "bill_of_lading": bl,
+            "bill_of_lading": bl
+    },
+    "debug": {
+        "invoice": inv_dbg,
+        "packing_list": pack_dbg,
+        "bill_of_lading": bl_dbg,
         },
     }
 

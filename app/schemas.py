@@ -29,3 +29,6 @@ class RiskReport(BaseModel):
     risk_band: Literal["low", "medium", "high"]
     issues: List[Issue]
     extracted_summary: Dict[str, Any]
+
+    # 👇 NEW: optional debug payload
+    debug: Optional[Dict[str, Any]] = None

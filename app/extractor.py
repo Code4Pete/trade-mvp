@@ -5,6 +5,7 @@ import shutil
 from typing import Dict, Any, Optional
 
 from pypdf import PdfReader
+from typing import Tuple
 
 # Optional OCR imports (only work if poppler + tesseract are installed)
 try:
@@ -235,3 +236,20 @@ def extract_document(doc_type: str, file_bytes: bytes) -> Dict[str, Any]:
     """
     text = get_document_text(file_bytes)
     return extract_fields(doc_type, text)
+
+def extract_document_with_debug(doc_type: str, file_bytes: bytes) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """
+    Returns (extracted_data, debug_info)
+    debug_info includes preview + stats so you can verify the PDF text is being used.
+    """
+    text = get_document_text(file_bytes)
+
+    debug = {
+        "doc_type": doc_type,
+        "ocr_available": OCR_AVAILABLE,
+        "text_chars": len(text or ""),
+        "text_preview": (text or "")[:1500],
+    }
+
+    data = llm_extract(doc_type, text)
+    return data, debug
