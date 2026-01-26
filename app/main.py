@@ -1,12 +1,11 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse
-from .extractor import extract_document
+
+from .extractor import extract_document_with_debug
 from .rules import run_rules
 from .scoring import score_issues, risk_band
 from .schemas import RiskReport
 from .report import html_response
-
-from .extractor import extract_document_with_debug
 
 app = FastAPI(title="Trade Doc AI MVP")
 
@@ -21,16 +20,14 @@ LAST_REPORT = None
 async def analyze(
     invoice: UploadFile = File(...),
     packing_list: UploadFile = File(...),
-    bill_of_lading: UploadFile = File(...)
+    bill_of_lading: UploadFile = File(...),
 ):
     inv, inv_dbg = extract_document_with_debug("invoice", await invoice.read())
     pack, pack_dbg = extract_document_with_debug("packing_list", await packing_list.read())
     bl, bl_dbg = extract_document_with_debug("bill_of_lading", await bill_of_lading.read())
 
-
     issues = run_rules(inv, pack, bl)
     score = score_issues(issues)
-
     issues_for_report = [i.model_dump() for i in issues]
 
     result = {
@@ -41,18 +38,17 @@ async def analyze(
         "extracted_summary": {
             "invoice": inv,
             "packing_list": pack,
-            "bill_of_lading": bl
-    },
-    "debug": {
-        "invoice": inv_dbg,
-        "packing_list": pack_dbg,
-        "bill_of_lading": bl_dbg,
-        },          
+            "bill_of_lading": bl,
+        },
+        "debug": {
+            "invoice": inv_dbg,
+            "packing_list": pack_dbg,
+            "bill_of_lading": bl_dbg,
+        },
     }
 
     global LAST_REPORT
     LAST_REPORT = result
-
     return result
 
 
@@ -63,7 +59,7 @@ async def analyze(
 async def analyze_and_view(
     invoice: UploadFile = File(...),
     packing_list: UploadFile = File(...),
-    bill_of_lading: UploadFile = File(...)
+    bill_of_lading: UploadFile = File(...),
 ):
     inv, inv_dbg = extract_document_with_debug("invoice", await invoice.read())
     pack, pack_dbg = extract_document_with_debug("packing_list", await packing_list.read())
@@ -71,7 +67,6 @@ async def analyze_and_view(
 
     issues = run_rules(inv, pack, bl)
     score = score_issues(issues)
-
     issues_for_report = [i.model_dump() for i in issues]
 
     result = {
@@ -82,12 +77,12 @@ async def analyze_and_view(
         "extracted_summary": {
             "invoice": inv,
             "packing_list": pack,
-            "bill_of_lading": bl
-    },
-    "debug": {
-        "invoice": inv_dbg,
-        "packing_list": pack_dbg,
-        "bill_of_lading": bl_dbg,
+            "bill_of_lading": bl,
+        },
+        "debug": {
+            "invoice": inv_dbg,
+            "packing_list": pack_dbg,
+            "bill_of_lading": bl_dbg,
         },
     }
 
@@ -103,10 +98,7 @@ async def analyze_and_view(
 @app.get("/report")
 def report():
     if not LAST_REPORT:
-        return HTMLResponse(
-            "<h2>No report yet</h2><p>Run an analysis first.</p>",
-            status_code=200,
-        )
+        return HTMLResponse("<h2>No report yet</h2><p>Run an analysis first.</p>", status_code=200)
     return html_response(LAST_REPORT)
 
 
@@ -115,7 +107,8 @@ def report():
 # ---------------------------
 @app.get("/analyze")
 def analyze_ui():
-    return HTMLResponse("""
+    return HTMLResponse(
+        """
     <!doctype html>
     <html>
     <head>
@@ -154,7 +147,8 @@ def analyze_ui():
       </div>
     </body>
     </html>
-    """)
+    """
+    )
 
 
 # ---------------------------
@@ -162,7 +156,8 @@ def analyze_ui():
 # ---------------------------
 @app.get("/")
 def home():
-    return HTMLResponse("""
+    return HTMLResponse(
+        """
     <!doctype html>
     <html>
     <head>
@@ -186,4 +181,5 @@ def home():
       </div>
     </body>
     </html>
-    """)
+    """
+    )

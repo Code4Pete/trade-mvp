@@ -2,10 +2,9 @@ import io
 import os
 import re
 import shutil
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple, List
 
 from pypdf import PdfReader
-from typing import Tuple
 
 # Optional OCR imports (only work if poppler + tesseract are installed)
 try:
@@ -25,7 +24,7 @@ def extract_pdf_text(file_bytes: bytes) -> str:
     """Extract selectable text from PDF pages (digital PDFs)."""
     try:
         reader = PdfReader(io.BytesIO(file_bytes))
-        parts = []
+        parts: List[str] = []
         for page in reader.pages:
             parts.append(page.extract_text() or "")
         return "\n".join(parts).strip()
@@ -38,7 +37,7 @@ def ocr_pdf(file_bytes: bytes, max_pages: int = 3, dpi: int = 200) -> str:
     if not OCR_AVAILABLE:
         return ""
     images = convert_from_bytes(file_bytes, dpi=dpi)
-    texts = []
+    texts: List[str] = []
     for img in images[:max_pages]:
         texts.append(pytesseract.image_to_string(img))
     return "\n".join(texts).strip()
@@ -68,22 +67,23 @@ def get_document_text(file_bytes: bytes) -> str:
 # ---------------------------
 
 def _find(pattern: str, text: str) -> Optional[str]:
-    m = re.search(pattern, text, flags=re.IGNORECASE | re.MULTILINE)
+    """Return first capture group for regex pattern."""
+    m = re.search(pattern, text or "", flags=re.IGNORECASE | re.MULTILINE)
     return m.group(1).strip() if m else None
 
 
 def _to_int(s: Optional[str]) -> Optional[int]:
     if not s:
         return None
-    s = re.sub(r"[^\d]", "", s)
-    return int(s) if s else None
+    s2 = re.sub(r"[^\d]", "", s)
+    return int(s2) if s2 else None
 
 
 def _to_float(s: Optional[str]) -> Optional[float]:
     if not s:
         return None
-    s = s.replace(",", "").strip()
-    m = re.search(r"[-+]?\d*\.?\d+", s)
+    s2 = s.replace(",", "").strip()
+    m = re.search(r"[-+]?\d*\.?\d+", s2)
     return float(m.group(0)) if m else None
 
 
@@ -94,10 +94,9 @@ def _upper_clean(s: Optional[str]) -> Optional[str]:
 
 
 def _guess_incoterm(text: str) -> Optional[str]:
-    # Common incoterms; look for standalone words
     incos = ["EXW", "FCA", "CPT", "CIP", "DAP", "DPU", "DDP", "FOB", "CFR", "CIF"]
     for t in incos:
-        if re.search(rf"\b{t}\b", text, flags=re.IGNORECASE):
+        if re.search(rf"\b{t}\b", text or "", flags=re.IGNORECASE):
             return t
     return None
 
@@ -109,43 +108,39 @@ def _guess_incoterm(text: str) -> Optional[str]:
 def extract_fields(doc_type: str, text: str) -> Dict[str, Any]:
     """
     Minimal-but-real extraction using regex/heuristics.
-    Works well for many “template-ish” PDFs and is cheap to run.
+    Cheap to run and good enough for MVP.
     """
-
     doc_type = (doc_type or "").lower()
     text = text or ""
 
-    # Universal helpers
     incoterm = _guess_incoterm(text)
 
+    # ---------------- INVOICE ----------------
     if doc_type == "invoice":
         invoice_no = (
-            _find(r"Invoice\s*(No|Number)\s*[:#]?\s*([A-Z0-9\-\/]+)", text)  # capture group 2
+            _find(r"Invoice\s*(?:No|Number)\s*[:#]?\s*([A-Z0-9\-\/]+)", text)
+            or _find(r"\bINV[-\s]*([0-9]{1,10})\b", text)
         )
-        # If pattern above matched, it returns the whole group(1) currently; fix:
-        if invoice_no and " " in invoice_no:
-            # not expected; ignore
-            pass
-        # Better: try explicit capture for value
-        invoice_no = _find(r"Invoice\s*(?:No|Number)\s*[:#]?\s*([A-Z0-9\-\/]+)", text) or invoice_no
 
         currency = (
             _find(r"\bCurrency\s*[:#]?\s*([A-Z]{3})\b", text)
             or ("USD" if re.search(r"\bUSD\b", text, re.IGNORECASE) else None)
+            or ("EUR" if re.search(r"\bEUR\b", text, re.IGNORECASE) else None)
         )
 
         total_amount = (
-            _find(r"Total\s*Amount\s*[:#]?\s*(?:USD|INR|AED|CAD)?\s*([\d,]+\.\d+|[\d,]+)", text)
-            or _find(r"Total\s*[:#]?\s*(?:USD|INR|AED|CAD)?\s*([\d,]+\.\d+|[\d,]+)", text)
+            _find(r"Total\s*Amount\s*[:#]?\s*(?:USD|INR|AED|EUR|GBP)?\s*([\d,]+\.\d+|[\d,]+)", text)
+            or _find(r"Invoice\s*Total\s*[:#]?\s*(?:USD|INR|AED|EUR|GBP)?\s*([\d,]+\.\d+|[\d,]+)", text)
+            or _find(r"\bTotal\s*[:#]?\s*(?:USD|INR|AED|EUR|GBP)?\s*([\d,]+\.\d+|[\d,]+)", text)
         )
 
         qty = (
-            _find(r"Quantity\s*[:#]?\s*([\d,]+)", text)
-            or _find(r"Total\s*Quantity\s*[:#]?\s*([\d,]+)", text)
+            _find(r"\bTotal\s*Quantity\s*[:#]?\s*([\d,]+)", text)
+            or _find(r"\bQuantity\s*[:#]?\s*([\d,]+)", text)
         )
 
-        exporter = _find(r"Seller\s*[:#]?\s*(.+)", text)
-        importer = _find(r"Buyer\s*[:#]?\s*(.+)", text)
+        exporter = _find(r"\bSeller\s*[:#]?\s*(.+)", text)
+        importer = _find(r"\bBuyer\s*[:#]?\s*(.+)", text)
 
         return {
             "doc_type": "invoice",
@@ -164,25 +159,25 @@ def extract_fields(doc_type: str, text: str) -> Dict[str, Any]:
                 "items": [],
             },
             "transport": {},
-            # keep raw text snippet for debugging/trust (optional)
             "raw_text_preview": text[:1200],
         }
 
+    # -------------- PACKING LIST --------------
     if doc_type == "packing_list":
         pl_no = _find(r"Packing\s*List\s*(?:No|Number)\s*[:#]?\s*([A-Z0-9\-\/]+)", text)
 
         cartons = (
             _find(r"No\.\s*of\s*Cartons\s*[:#]?\s*([\d,]+)", text)
-            or _find(r"Cartons\s*[:#]?\s*([\d,]+)", text)
-            or _find(r"Packages\s*[:#]?\s*([\d,]+)", text)
+            or _find(r"\bCartons\s*[:#]?\s*([\d,]+)", text)
+            or _find(r"\bPackages\s*[:#]?\s*([\d,]+)", text)
         )
 
-        gross = _find(r"Gross\s*Weight\s*[:#]?\s*([\d,\.]+)\s*(KG|KGS|LB|LBS)?", text)
-        net = _find(r"Net\s*Weight\s*[:#]?\s*([\d,\.]+)\s*(KG|KGS|LB|LBS)?", text)
+        gross = _find(r"Gross\s*Weight\s*[:#]?\s*([\d,\.]+)", text)
+        net = _find(r"Net\s*Weight\s*[:#]?\s*([\d,\.]+)", text)
 
         qty = (
             _find(r"Total\s*Quantity\s*[:#]?\s*([\d,]+)", text)
-            or _find(r"Quantity\s*[:#]?\s*([\d,]+)", text)
+            or _find(r"\bQuantity\s*[:#]?\s*([\d,]+)", text)
         )
 
         return {
@@ -200,7 +195,7 @@ def extract_fields(doc_type: str, text: str) -> Dict[str, Any]:
             "raw_text_preview": text[:1200],
         }
 
-    # bill_of_lading
+    # -------------- BILL OF LADING --------------
     bl_no = (
         _find(r"\bB\/L\s*(?:No|Number)\s*[:#]?\s*([A-Z0-9\-\/]+)", text)
         or _find(r"\bBL\s*(?:No|Number)\s*[:#]?\s*([A-Z0-9\-\/]+)", text)
@@ -209,18 +204,26 @@ def extract_fields(doc_type: str, text: str) -> Dict[str, Any]:
 
     packages = (
         _find(r"No\.\s*of\s*Packages\s*[:#]?\s*([\d,]+)", text)
-        or _find(r"Packages\s*[:#]?\s*([\d,]+)", text)
+        or _find(r"\bPackages\s*[:#]?\s*([\d,]+)", text)
     )
 
-    freight = _find(r"Freight\s*[:#]?\s*([A-Za-z ]+)", text)
-    gross = _find(r"Gross\s*Weight\s*[:#]?\s*([\d,\.]+)\s*(KG|KGS|LB|LBS)?", text)
+    freight = _find(r"\bFreight\s*[:#]?\s*([A-Za-z ]+)", text)
+    gross = _find(r"Gross\s*Weight\s*[:#]?\s*([\d,\.]+)", text)
+
+    mode = "SEA" if re.search(r"\bVessel\b|\bPort\b", text, re.IGNORECASE) else None
 
     return {
         "doc_type": "bill_of_lading",
         "parties": {},
         "commercial_terms": {"freight_terms": _upper_clean(freight)},
-        "cargo": {"total_packages": _to_int(packages), "total_gross_weight": _to_float(gross)},
-        "transport": {"bl_number": bl_no, "mode": "SEA" if re.search(r"\bVessel\b|\bPort\b", text, re.I) else None},
+        "cargo": {
+            "total_packages": _to_int(packages),
+            "total_gross_weight": _to_float(gross),
+        },
+        "transport": {
+            "bl_number": bl_no,
+            "mode": mode,
+        },
         "raw_text_preview": text[:1200],
     }
 
@@ -237,7 +240,10 @@ def extract_document(doc_type: str, file_bytes: bytes) -> Dict[str, Any]:
     text = get_document_text(file_bytes)
     return extract_fields(doc_type, text)
 
-def extract_document_with_debug(doc_type: str, file_bytes: bytes) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+
+def extract_document_with_debug(
+    doc_type: str, file_bytes: bytes
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     Returns (extracted_data, debug_info)
     debug_info includes preview + stats so you can verify the PDF text is being used.
@@ -251,5 +257,5 @@ def extract_document_with_debug(doc_type: str, file_bytes: bytes) -> Tuple[Dict[
         "text_preview": (text or "")[:1500],
     }
 
-    data = llm_extract(doc_type, text)
+    data = extract_fields(doc_type, text)
     return data, debug
