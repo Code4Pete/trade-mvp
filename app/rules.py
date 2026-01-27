@@ -27,6 +27,25 @@ def run_rules(inv: Dict[str, Any], pack: Dict[str, Any], bl: Dict[str, Any]) -> 
     """
     issues: List[Issue] = []
 
+        # 0) Certificate of Origin (COO) missing / not referenced (critical)
+    ct = inv.get("commercial_terms") or {}
+    coo_country = ct.get("country_of_origin")
+    coo_mention = ct.get("coo_mention")
+
+    # Missing if neither a COO country nor any "Certificate of Origin/COO" mention exists
+    if not coo_country and not coo_mention:
+        issues.append(Issue(
+            severity="critical",
+            code="COO_MISSING",
+            title="Certificate of Origin missing / not referenced",
+            explanation="For India→UAE shipments, COO is commonly required to claim CEPA duty benefits and avoid customs queries.",
+            recommendation="Include a valid Certificate of Origin (or reference it clearly) and ensure COO details match invoice and packing list.",
+            evidence={
+                "invoice_country_of_origin": coo_country,
+                "invoice_coo_mention": coo_mention,
+            }
+        ))
+
     # 1) Incoterm missing (critical)
     incoterm = (inv.get("commercial_terms") or {}).get("incoterm")
     if not incoterm:

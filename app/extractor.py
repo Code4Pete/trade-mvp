@@ -2,6 +2,7 @@
 # Regex-upgraded, "real text" extractor (no OpenAI calls)
 # - Extracts text via pypdf; falls back to OCR if available + low text
 # - Uses stronger regex for Invoice / Packing List / Bill of Lading
+# - Extracts COO fields (country_of_origin + coo_mention) for UAE rules
 # - Adds simple confidence scoring per field + overall confidence
 # - Returns consistent schema + debug helpers (via extract_document_with_debug)
 
@@ -208,6 +209,30 @@ def _extract_party(text: str, labels: List[str]) -> Optional[str]:
     return None
 
 
+def _extract_country_of_origin(text: str) -> Optional[str]:
+    # Common labels used in trade docs
+    val = _find_first(
+        [
+            r"\bCountry\s*of\s*Origin\s*[:\-]?\s*([A-Za-z][A-Za-z\s]+)",
+            r"\bOrigin\s*Country\s*[:\-]?\s*([A-Za-z][A-Za-z\s]+)",
+            r"\bCOO\s*[:\-]?\s*([A-Za-z][A-Za-z\s]+)",
+            r"\bOrigin\s*[:\-]?\s*([A-Za-z][A-Za-z\s]+)",  # fallback (can be noisy)
+        ],
+        text,
+    )
+    if not val:
+        return None
+    # Cut at newline if needed
+    val = val.split("\n")[0].strip()
+    # Remove trailing junk like "Description..." if OCR merged lines
+    val = re.split(r"\b(Description|Goods|Item|Invoice|Packing|Bill)\b", val, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+    return val or None
+
+
+def _mentions_coo(text: str) -> bool:
+    return bool(re.search(r"\b(Certificate\s+of\s+Origin|Cert\.?\s*of\s*Origin|COO)\b", text, re.IGNORECASE))
+
+
 # ---------------------------
 # Field extraction (per doc)
 # ---------------------------
@@ -221,6 +246,8 @@ def extract_fields(doc_type: str, text: str) -> Dict[str, Any]:
     text = text or ""
 
     incoterm = _guess_incoterm(text)
+    coo_country = _extract_country_of_origin(text)
+    coo_mention = _mentions_coo(text)
 
     if doc_type == "invoice":
         invoice_no = _clean_id(
@@ -235,7 +262,6 @@ def extract_fields(doc_type: str, text: str) -> Dict[str, Any]:
 
         currency = _guess_currency(text)
 
-        # Total amount patterns:
         total_amount_s = _find_first(
             [
                 r"\bTotal\s*Amount\s*[:\-]?\s*(?:[A-Z]{3}\s*)?([\d,]+\.\d+|[\d,]+)\b",
@@ -261,6 +287,8 @@ def extract_fields(doc_type: str, text: str) -> Dict[str, Any]:
                 "incoterm": incoterm,
                 "invoice_value": _to_float(total_amount_s),
                 "currency": currency,
+                "country_of_origin": coo_country,
+                "coo_mention": coo_mention,
             },
             "cargo": {
                 "total_quantity": qty,
@@ -295,7 +323,11 @@ def extract_fields(doc_type: str, text: str) -> Dict[str, Any]:
                 "exporter": {"name": exporter} if exporter else {},
                 "importer": {"name": importer} if importer else {},
             },
-            "commercial_terms": {"packing_list_number": pl_no},
+            "commercial_terms": {
+                "packing_list_number": pl_no,
+                "country_of_origin": coo_country,
+                "coo_mention": coo_mention,
+            },
             "cargo": {
                 "total_quantity": qty,
                 "total_packages": cartons,
@@ -351,7 +383,11 @@ def extract_fields(doc_type: str, text: str) -> Dict[str, Any]:
             "shipper": {"name": shipper} if shipper else {},
             "consignee": {"name": consignee} if consignee else {},
         },
-        "commercial_terms": {"freight_terms": freight_terms},
+        "commercial_terms": {
+            "freight_terms": freight_terms,
+            "country_of_origin": coo_country,
+            "coo_mention": coo_mention,
+        },
         "cargo": {
             "total_packages": packages,
             "total_gross_weight": gross,
@@ -407,9 +443,10 @@ def extract_document_with_debug(doc_type: str, file_bytes: bytes) -> Tuple[Dict[
     text, method = get_document_text(file_bytes)
     data = extract_fields(doc_type, text)
 
-    # Track which key fields were found (helps explain "—" in report)
     doc_type_l = (doc_type or "").lower()
     fields_found: Dict[str, bool] = {}
+
+    confidence: Dict[str, float] = {}
 
     if doc_type_l == "invoice":
         ct = data.get("commercial_terms") or {}
@@ -420,14 +457,17 @@ def extract_document_with_debug(doc_type: str, file_bytes: bytes) -> Tuple[Dict[
             "invoice_value": ct.get("invoice_value") is not None,
             "currency": bool(ct.get("currency")),
             "total_quantity": cargo.get("total_quantity") is not None,
+            "country_of_origin": bool(ct.get("country_of_origin")),
+            "coo_mention": bool(ct.get("coo_mention")),
         }
-
         confidence = {
             "invoice_number": _score_field(fields_found["invoice_number"], ct.get("invoice_number")),
             "incoterm": _score_field(fields_found["incoterm"], ct.get("incoterm")),
             "invoice_value": _score_field(fields_found["invoice_value"], ct.get("invoice_value")),
             "currency": _score_field(fields_found["currency"], ct.get("currency")),
             "total_quantity": _score_field(fields_found["total_quantity"], cargo.get("total_quantity")),
+            "country_of_origin": _score_field(fields_found["country_of_origin"], ct.get("country_of_origin")),
+            "coo_mention": _score_field(fields_found["coo_mention"], ct.get("coo_mention")),
         }
 
     elif doc_type_l == "packing_list":
@@ -439,14 +479,17 @@ def extract_document_with_debug(doc_type: str, file_bytes: bytes) -> Tuple[Dict[
             "total_packages": cargo.get("total_packages") is not None,
             "total_gross_weight": cargo.get("total_gross_weight") is not None,
             "total_net_weight": cargo.get("total_net_weight") is not None,
+            "country_of_origin": bool(ct.get("country_of_origin")),
+            "coo_mention": bool(ct.get("coo_mention")),
         }
-
         confidence = {
             "packing_list_number": _score_field(fields_found["packing_list_number"], ct.get("packing_list_number")),
             "total_quantity": _score_field(fields_found["total_quantity"], cargo.get("total_quantity")),
             "total_packages": _score_field(fields_found["total_packages"], cargo.get("total_packages")),
             "total_gross_weight": _score_field(fields_found["total_gross_weight"], cargo.get("total_gross_weight")),
             "total_net_weight": _score_field(fields_found["total_net_weight"], cargo.get("total_net_weight")),
+            "country_of_origin": _score_field(fields_found["country_of_origin"], ct.get("country_of_origin")),
+            "coo_mention": _score_field(fields_found["coo_mention"], ct.get("coo_mention")),
         }
 
     else:
@@ -460,8 +503,9 @@ def extract_document_with_debug(doc_type: str, file_bytes: bytes) -> Tuple[Dict[
             "freight_terms": bool(ct.get("freight_terms")),
             "total_packages": cargo.get("total_packages") is not None,
             "total_gross_weight": cargo.get("total_gross_weight") is not None,
+            "country_of_origin": bool(ct.get("country_of_origin")),
+            "coo_mention": bool(ct.get("coo_mention")),
         }
-
         confidence = {
             "bl_number": _score_field(fields_found["bl_number"], tr.get("bl_number")),
             "port_of_loading": _score_field(fields_found["port_of_loading"], tr.get("port_of_loading")),
@@ -469,6 +513,8 @@ def extract_document_with_debug(doc_type: str, file_bytes: bytes) -> Tuple[Dict[
             "freight_terms": _score_field(fields_found["freight_terms"], ct.get("freight_terms")),
             "total_packages": _score_field(fields_found["total_packages"], cargo.get("total_packages")),
             "total_gross_weight": _score_field(fields_found["total_gross_weight"], cargo.get("total_gross_weight")),
+            "country_of_origin": _score_field(fields_found["country_of_origin"], ct.get("country_of_origin")),
+            "coo_mention": _score_field(fields_found["coo_mention"], ct.get("coo_mention")),
         }
 
     overall = _avg(list(confidence.values()))
