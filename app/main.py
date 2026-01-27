@@ -22,24 +22,42 @@ def compute_readiness(debug: dict, issues: list) -> dict:
     missing_fields = 0
 
     for doc in debug.values():
-        confidences.append(doc.get("confidence_overall", 0))
-        missing_fields += sum(
-            1 for v in doc.get("fields_found", {}).values() if not v
-        )
+        confidences.append(float(doc.get("confidence_overall", 0) or 0))
+        missing_fields += sum(1 for v in (doc.get("fields_found") or {}).values() if not v)
 
-    avg_conf = round(sum(confidences) / len(confidences), 2) if confidences else 0
-    critical_issues = sum(1 for i in issues if i.get("severity") == "critical")
+    avg_conf = (sum(confidences) / len(confidences)) if confidences else 0.0
+    avg_conf = round(avg_conf, 2)
 
-    if avg_conf >= 0.85 and critical_issues == 0:
-        level = "high"
-    elif avg_conf >= 0.65:
-        level = "medium"
-    else:
+    critical_issues = sum(1 for i in issues if (i.get("severity") == "critical"))
+
+    # --- Score: start from extraction confidence
+    score = int(avg_conf * 100)
+
+    # Penalize missing fields (tune these numbers freely)
+    score -= min(30, missing_fields * 4)  # max -30
+
+    # Penalize critical issues strongly
+    score -= critical_issues * 15
+
+    # Clamp 0..100
+    score = max(0, min(100, score))
+
+    # --- Level gates (simple & explainable)
+    if critical_issues >= 2:
         level = "low"
+    elif critical_issues == 1:
+        level = "medium" if score >= 70 else "low"
+    else:
+        if score >= 85:
+            level = "high"
+        elif score >= 65:
+            level = "medium"
+        else:
+            level = "low"
 
     return {
         "level": level,
-        "score": int(avg_conf * 100),
+        "score": score,
         "missing_fields": missing_fields,
         "critical_issues": critical_issues,
     }

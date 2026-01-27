@@ -199,7 +199,7 @@ def render_report_html(report: Dict[str, Any]) -> str:
       </div>
 
       <div class="kpi">
-        <div class="k">Risk Score</div>
+        <div class="k">Risk (higher = worse)</div>
         <div class="v">{score}/100</div>
       </div>
 
