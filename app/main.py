@@ -12,34 +12,86 @@ app = FastAPI(title="Trade Doc AI MVP")
 # In-memory store for latest report (MVP only)
 LAST_REPORT = None
 
+# Baseline required fields (route-agnostic, MVP)
+# Keep this small and universal. Add route overlays later in rules.
+BASELINE_REQUIRED_FIELDS = {
+    "invoice": [
+        ("commercial_terms.invoice_number", "Invoice number"),
+        ("commercial_terms.invoice_value", "Invoice value"),
+        ("commercial_terms.currency", "Currency"),
+        ("cargo.total_quantity", "Total quantity"),
+        # incoterm is important but NOT universal across all markets/docs
+        # so treat it as compliance rule, not baseline completeness
+    ],
+    "packing_list": [
+        ("cargo.total_packages", "Total packages/cartons"),
+        ("cargo.total_gross_weight", "Gross weight"),
+        ("cargo.total_net_weight", "Net weight"),
+        ("cargo.total_quantity", "Total quantity"),
+    ],
+    "bill_of_lading": [
+        ("transport.bl_number", "BL number"),
+        ("transport.port_of_loading", "Port of loading"),
+        ("transport.port_of_discharge", "Port of discharge"),
+        ("cargo.total_packages", "Total packages"),
+        ("cargo.total_gross_weight", "Gross weight"),
+    ],
+}
+
+def _get_path(obj: dict, path: str):
+    cur = obj
+    for part in path.split("."):
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(part)
+    return cur
 
 # ---------------------------
 # Readiness / confidence logic
 # ---------------------------
+def compute_readiness(report: dict, issues: list) -> dict:
+    """
+    Route-agnostic readiness:
+    - Measures extraction confidence + baseline completeness
+    - Penalizes critical issues (route-specific checks live in rules.py)
+    """
+    debug = report.get("debug") or {}
+    extracted = report.get("extracted_summary") or {}
 
-def compute_readiness(debug: dict, issues: list) -> dict:
+    # --- 1) Avg extraction confidence (route-agnostic)
     confidences = []
-    missing_fields = 0
+    for doc_dbg in debug.values():
+        confidences.append(float(doc_dbg.get("confidence_overall", 0) or 0))
+    avg_conf = round(sum(confidences) / len(confidences), 2) if confidences else 0.0
 
-    for doc in debug.values():
-        confidences.append(float(doc.get("confidence_overall", 0) or 0))
-        missing_fields += sum(1 for v in (doc.get("fields_found") or {}).values() if not v)
+    # --- 2) Baseline completeness missing-fields (route-agnostic)
+    missing = []  # list of (doc_type, field_label)
+    for doc_type, fields in BASELINE_REQUIRED_FIELDS.items():
+        doc_obj = extracted.get(doc_type) or {}
+        for path, label in fields:
+            val = _get_path(doc_obj, path)
+            is_missing = (
+                val is None or
+                (isinstance(val, str) and not val.strip())
+            )
+            if is_missing:
+                missing.append((doc_type, label))
 
-    avg_conf = (sum(confidences) / len(confidences)) if confidences else 0.0
-    avg_conf = round(avg_conf, 2)
+    missing_fields = len(missing)
 
+    # --- 3) Critical issues from rules engine (route-specific)
     critical_issues = sum(1 for i in issues if (i.get("severity") == "critical"))
 
-    # --- Score: start from extraction confidence
+    # --- Score starts from extraction confidence
     score = int(avg_conf * 100)
 
-    # Penalize missing fields (tune these numbers freely)
-    score -= min(30, missing_fields * 4)  # max -30
+    # Penalize missing baseline fields (cap to avoid extremes)
+    score -= min(30, missing_fields * 4)
 
-    # Penalize critical issues strongly
+    # Penalize critical issues strongly (these are compliance blockers)
     score -= critical_issues * 15
 
-    # Clamp 0..100
+    # Clamp
     score = max(0, min(100, score))
 
     # --- Level gates (simple & explainable)
@@ -60,6 +112,9 @@ def compute_readiness(debug: dict, issues: list) -> dict:
         "score": score,
         "missing_fields": missing_fields,
         "critical_issues": critical_issues,
+        # optional but VERY useful for transparency:
+        "missing_breakdown": [{"doc": d, "field": f} for d, f in missing],
+        "avg_extraction_confidence": avg_conf,
     }
 
 def analyze_documents(invoice, packing_list, bill_of_lading):
@@ -77,13 +132,11 @@ def analyze_documents(invoice, packing_list, bill_of_lading):
         "bill_of_lading": bl_dbg,
     }
 
-    readiness = compute_readiness(debug, issues_for_report)
-
+    # Build result FIRST (without readiness)
     result = {
         "route": {"origin_country": "IN", "destination_country": "AE"},
         "risk_score": score,
         "risk_band": risk_band(score),
-        "readiness": readiness,
         "issues": issues_for_report,
         "extracted_summary": {
             "invoice": inv,
@@ -93,8 +146,11 @@ def analyze_documents(invoice, packing_list, bill_of_lading):
         "debug": debug,
     }
 
-    return result
+    # Now compute readiness using the full result
+    readiness = compute_readiness(result, issues_for_report)
+    result["readiness"] = readiness
 
+    return result
 
 # ---------------------------
 # API: Analyze (JSON)
